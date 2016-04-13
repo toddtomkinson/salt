@@ -27,17 +27,94 @@ the marathon endpoint:
 from __future__ import absolute_import
 
 import logging
+import threading
+
 import salt.utils.http
 
 
 __proxyenabled__ = ['marathon']
 CONFIG = {}
 CONFIG_BASE_URL = 'base_url'
+DETAILS = {}
 log = logging.getLogger(__file__)
+
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 
 def __virtual__():
     return True
+
+
+class EventReceiver(object):
+    '''
+    Class used to encapsulate a thread that monitors the marathon event stream
+    to publish deployment events to other minions.
+    '''
+
+    def __init__(self, base_url, minion_id):
+        self.running = False
+        self.base_url = base_url
+        self.minion_id = minion_id
+
+    def start(self):
+        '''
+        Start the thread that monitors the event stream.
+        '''
+        self.running = True
+        threading.Thread(
+            target=self.run,
+        ).start()
+
+    def stop(self):
+        '''
+        Stop the thread that monitors the event stream.
+        '''
+        self.running = False
+
+    def run(self):
+        '''
+        The thread's target method that does the work of connecting to the
+        event stream, monitoring the stream for deployment_success messages,
+        and publishing events to the salt reactor to notify other minions.
+        '''
+        log.debug("Starting marathon event receiver")
+        while True:
+            if not self.running:
+                break
+            try:
+                log.debug("Making marathon event receiver request")
+                response = requests.get(
+                    "{0}/v2/events".format(self.base_url),
+                    stream=True,
+                    headers={
+                        'Accept': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                    },
+                )
+                for line in response.iter_lines():
+                    log.debug("Marathon event stream line: %s", line)
+                    # we only care about deployment_success events (for now)
+                    if 'event: deployment_success' in line:
+                        log.info('Marathon event: deployment_success')
+                        # update the registered mine functions
+                        __salt__['mine.update']()
+                        # publish the deployment_success event
+                        __salt__['event.send'](
+                            'salt/marathon/{0}/deployment_success'.format(
+                                self.minion_id
+                            )
+                        )
+            except Exception as ex:
+                log.error(
+                    'error calling marathon event stream with base_url %s: %s',
+                    CONFIG[CONFIG_BASE_URL],
+                    ex,
+                )
 
 
 def init(opts):
@@ -49,6 +126,12 @@ def init(opts):
     else:
         log.error('missing proxy property %s', CONFIG_BASE_URL)
     log.debug('CONFIG: %s', CONFIG)
+
+    if HAS_REQUESTS:
+        # start a background thread that monitors the marathon server side
+        # event stream and listens for new deployments
+        DETAILS['er'] = EventReceiver(CONFIG[CONFIG_BASE_URL], opts['id'])
+        DETAILS['er'].start()
 
 
 def ping():
@@ -81,3 +164,6 @@ def shutdown(opts):
     For this proxy shutdown is a no-op
     '''
     log.debug('marathon proxy shutdown() called...')
+    if HAS_REQUESTS:
+        # stop the background thread
+        DETAILS['er'].stop()
