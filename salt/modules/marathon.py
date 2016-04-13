@@ -75,6 +75,39 @@ def has_app(id):
     return _app_id(id) in apps()['apps']
 
 
+def tasks():
+    '''
+    Return the currently running tasks, grouped by app id.
+
+    CLI Example:
+    .. code-block:: bash
+        salt marathon-minion-id marathon.tasks
+
+    This can be registered as a mine function so that task data can be used by
+    other minions (to configure load balancers, for example).
+    '''
+    response = salt.utils.http.query(
+        "{0}/v2/tasks".format(_base_url()),
+        decode_type='json',
+        decode=True,
+    )
+
+    def _reduce_tasks(dict1, dict2):
+        for key in dict2:
+            if key in dict1:
+                dict1[key].extend(dict2[key])
+            else:
+                dict1[key] = dict2[key]
+        return dict1
+
+    return {
+        'tasks': reduce(
+            _reduce_tasks,
+            [{task['appId']: [task]} for task in response['dict']['tasks']]
+        )
+    }
+
+
 def app(id):
     '''
     Return the current server configuration for the specified app.
