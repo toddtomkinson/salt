@@ -161,7 +161,7 @@ def ping():
 
 def shutdown(opts):
     '''
-    For this proxy shutdown is a no-op
+    Cleanup any resources used by the proxy minion.
     '''
     log.debug('marathon proxy shutdown() called...')
     if HAS_REQUESTS:
